@@ -166,7 +166,6 @@ else:
 st.divider()
 
 # ------------------ Relatório interpretativo ------------------
-# ------------------ Relatório interpretativo ------------------
 if len(num_cols) > 1:
     X_num = df[num_cols].dropna()
     vif_data = pd.DataFrame()
