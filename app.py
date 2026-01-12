@@ -33,8 +33,8 @@ if uploaded is not None:
     df = load_data(uploaded)
     st.success("✅ Arquivo carregado com sucesso")
 else:
-   df = load_data("online_shoppers_intention.csv")
-   st.info("📌 Arquivo padrão carregado do repositório.")
+    df = load_data("online_shoppers_intention.csv")
+    st.info("📌 Arquivo padrão carregado do repositório.")
 
 st.write("Formato:", df.shape)
 st.divider()
@@ -105,10 +105,22 @@ chosen = max(scores, key=scores.get)
 
 st.subheader("📊 Resultados dos Modelos")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Acurácia ROC‑AUC — Regressão Logística", f"{auc_log:.3f}")
-col2.metric("Acurácia ROC‑AUC — Floresta Aleatória", f"{auc_rf:.3f}")
-col3.metric("Acurácia ROC‑AUC — XGBoost", f"{auc_xgb:.3f}")
+col1.metric("ROC‑AUC — Regressão Logística", f"{auc_log:.3f}")
+col2.metric("ROC‑AUC — Floresta Aleatória", f"{auc_rf:.3f}")
+col3.metric("ROC‑AUC — XGBoost", f"{auc_xgb:.3f}")
 col4.metric("Modelo com melhor desempenho", chosen)
+
+# ------------------ Gráfico das métricas ------------------
+st.subheader("📊 Comparação das Métricas ROC-AUC")
+fig, ax = plt.subplots(figsize=(8,6))
+ax.bar(scores.keys(), scores.values(), color=["#1E88E5", "#43A047", "#F4511E"])
+ax.set_ylim(0, 1)
+ax.set_ylabel("ROC-AUC")
+ax.set_title("Desempenho dos Modelos")
+for i, v in enumerate(scores.values()):
+    ax.text(i, v + 0.02, f"{v:.3f}", ha='center', fontweight='bold')
+st.pyplot(fig)
+
 st.divider()
 
 # ------------------ Curvas ROC ------------------
@@ -121,6 +133,7 @@ ax.plot([0,1],[0,1],'k--', label='Aleatório')
 ax.set_title("Curvas ROC — Comparação dos Modelos")
 ax.legend(loc="lower right")
 st.pyplot(fig)
+
 st.divider()
 
 # ------------------ Importância das Variáveis ------------------
@@ -149,8 +162,10 @@ if importances is not None and len(importances) > 0:
     st.pyplot(fig)
 else:
     st.write("⚠️ Não foi possível calcular a importância das variáveis.")
+
 st.divider()
 
+# ------------------ Relatório interpretativo ------------------
 # ------------------ Relatório interpretativo ------------------
 if len(num_cols) > 1:
     X_num = df[num_cols].dropna()
@@ -205,5 +220,3 @@ O modelo {chosen} é o mais indicado para prever a intenção de compra online n
 st.subheader("📑 Relatório de Interpretação")
 st.markdown(relatorio)
 st.download_button("⬇️ Baixar Relatório", relatorio, file_name="relatorio_clientes_perfeitos.txt")
->>>>>>> 129631d (Primeira versão do app Clientes Perfeitos)
-st.divider()
