@@ -1,228 +1,201 @@
+# =========================================================
+# app.py — Semanthix ML Studio (versão otimizada)
+# =========================================================
+
+# ---------------- Imports ----------------
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import matplotlib.pyplot as plt
+import io, time
 
-from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score, RocCurveDisplay
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, roc_auc_score, confusion_matrix,
+                             RocCurveDisplay)
 
 from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline as ImbPipeline
-
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 from xgboost import XGBClassifier
 
-# ------------------ Configuração visual ------------------
-st.set_page_config(page_title="Clientes Perfeitos — Online Shoppers", layout="wide")
-st.title("🏆 Clientes Perfeitos — Intenção dos Compradores Online")
-st.caption("Pipeline otimizado com Revenue como alvo (classificação binária).")
+import shap
+from lime.lime_tabular import LimeTabularExplainer
 
-# ------------------ Carregamento de dados ------------------
+# ---------------- Configuração da página ----------------
+st.set_page_config(page_title="Semanthix ML Studio", layout="wide")
+st.title("🚀 Semanthix ML Studio — Otimizado")
+
+# ---------------- Sidebar ----------------
+st.sidebar.header("⚙️ Configurações")
+
+target_col = st.sidebar.text_input("Coluna alvo (binária)", value="Compra")
+test_size = st.sidebar.slider("Tamanho do teste", 0.1, 0.4, 0.2, 0.05)
+random_state = st.sidebar.number_input("Random state", value=42, step=1)
+apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+cv_folds = st.sidebar.slider("Folds CV", 3, 10, 5, 1)
+
+# ---------------- Upload de dados ----------------
 @st.cache_data
-def load_data(path_or_buffer):
-    return pd.read_csv(path_or_buffer)
+def load_data(uploaded):
+    return pd.read_csv(uploaded)
 
-st.subheader("📂 Carregamento de Dados")
-uploaded = st.file_uploader("Selecione o arquivo de clientes (CSV)", type=['csv'])
+uploaded = st.file_uploader("📂 Envie o dataset CSV", type="csv")
 
-if uploaded is not None:
-    df = load_data(uploaded)
-    st.success("✅ Arquivo carregado com sucesso")
-else:
-    df = load_data("online_shoppers_intention.csv")
-    st.info("📌 Arquivo padrão carregado do repositório.")
+if uploaded is None:
+    st.warning("Envie um arquivo CSV para iniciar.")
+    st.stop()
 
-st.write("Formato:", df.shape)
-st.divider()
+df = load_data(uploaded)
+st.success("✅ Dataset carregado com cache")
 
-# ------------------ Preparação ------------------
-df['Revenue'] = df['Revenue'].astype(int)
-X = df.drop(columns=['Revenue'])
-y = df['Revenue']
+# ---------------- Tradução opcional ----------------
+traducao = {
+    "Revenue":"Compra","BounceRates":"TaxaRejeição","ExitRates":"TaxaSaída",
+    "PageValues":"ValorPágina","SpecialDay":"DiaEspecial","Month":"Mês",
+    "OperatingSystems":"SistemaOperacional","Browser":"Navegador","Region":"Região",
+    "TrafficType":"TipoTráfego","VisitorType":"TipoVisitante","Weekend":"FimDeSemana"
+}
+df = df.rename(columns={k:v for k,v in traducao.items() if k in df.columns})
 
-num_cols = X.select_dtypes(include=['float64', 'int64']).columns.tolist()
-cat_cols = [c for c in X.columns if c not in num_cols]
+# ---------------- Pré-processamento com cache ----------------
+@st.cache_data
+def preprocess(df, target):
+    df = df.dropna(subset=[target])
+    y = df[target].astype(int)
+    X = df.drop(columns=[target])
 
-numeric_tf = Pipeline([
-    ('imputer', SimpleImputer(strategy='median')),
-    ('scaler', StandardScaler())
-])
+    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 
-categorical_tf = Pipeline([
-    ('imputer', SimpleImputer(strategy='most_frequent')),
-    ('encoder', OneHotEncoder(handle_unknown='ignore'))
-])
+    preprocessor = ColumnTransformer([
+        ("num", StandardScaler(), num_cols),
+        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols)
+    ])
 
-preprocess = ColumnTransformer([
-    ('num', numeric_tf, num_cols),
-    ('cat', categorical_tf, cat_cols)
-])
+    X_proc = preprocessor.fit_transform(X)
+    return X_proc, y, num_cols, cat_cols, preprocessor
 
-# ------------------ Modelos ------------------
-smote = SMOTE(random_state=42)
+X_proc, y, num_cols, cat_cols, preprocessor = preprocess(df, target_col)
 
-log_reg = LogisticRegression(max_iter=300, solver='liblinear')
-rf = RandomForestClassifier(n_estimators=100, max_features='sqrt', random_state=42, n_jobs=-1)
-xgb = XGBClassifier(
-    n_estimators=200,
-    learning_rate=0.1,
-    max_depth=5,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    use_label_encoder=False,
-    eval_metric='logloss'
+# ---------------- Split + SMOTE com cache ----------------
+@st.cache_data
+def split_balance(X, y, test_size, random_state, apply_smote):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, stratify=y, test_size=test_size, random_state=random_state
+    )
+
+    if apply_smote:
+        sm = SMOTE(random_state=random_state)
+        X_train, y_train = sm.fit_resample(X_train, y_train)
+
+    return X_train, X_test, y_train, y_test
+
+X_train, X_test, y_train, y_test = split_balance(
+    X_proc, y, test_size, random_state, apply_smote
 )
 
-pipe_log = ImbPipeline([('prep', preprocess), ('smote', smote), ('model', log_reg)])
-pipe_rf  = ImbPipeline([('prep', preprocess), ('smote', smote), ('model', rf)])
-pipe_xgb = ImbPipeline([('prep', preprocess), ('smote', smote), ('model', xgb)])
+# ---------------- Treinamento (sob demanda + cache) ----------------
+@st.cache_resource
+def train_models(X_train, y_train, random_state):
+    log_reg = LogisticRegression(max_iter=1000)
+    rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=random_state)
+    xgb = XGBClassifier(
+        n_estimators=400, learning_rate=0.05, max_depth=5,
+        subsample=0.8, colsample_bytree=0.8,
+        random_state=random_state, eval_metric="logloss", n_jobs=-1
+    )
 
-cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-param_grid_rf = {'model__n_estimators': [100], 'model__max_depth': [None], 'model__max_features': ['sqrt']}
-grid_rf = GridSearchCV(pipe_rf, param_grid_rf, cv=cv, scoring='roc_auc', n_jobs=-1)
+    log_reg.fit(X_train, y_train)
+    rf.fit(X_train, y_train)
+    xgb.fit(X_train, y_train)
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    return log_reg, rf, xgb
 
-pipe_log.fit(X_train, y_train)
-grid_rf.fit(X_train, y_train)
-best_rf = grid_rf.best_estimator_
-pipe_xgb.fit(X_train, y_train)
+if st.button("🚀 Treinar modelos"):
+    with st.spinner("Treinando modelos..."):
+        log_reg, rf, xgb = train_models(X_train, y_train, random_state)
+    st.success("Modelos treinados e cacheados")
+else:
+    st.stop()
 
-# ------------------ Resultados ------------------
-y_proba_log = pipe_log.predict_proba(X_test)[:, 1]
-y_proba_rf  = best_rf.predict_proba(X_test)[:, 1]
-y_proba_xgb = pipe_xgb.predict_proba(X_test)[:, 1]
+# ---------------- Avaliação ----------------
+def evaluate(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:,1]
+    return {
+        "Acurácia": accuracy_score(y_test, y_pred),
+        "Precisão": precision_score(y_test, y_pred),
+        "Recall": recall_score(y_test, y_pred),
+        "F1": f1_score(y_test, y_pred),
+        "AUC": roc_auc_score(y_test, y_proba)
+    }, y_pred, y_proba
 
-auc_log = roc_auc_score(y_test, y_proba_log)
-auc_rf  = roc_auc_score(y_test, y_proba_rf)
-auc_xgb = roc_auc_score(y_test, y_proba_xgb)
+metrics_log, ypl, ppl = evaluate(log_reg, X_test, y_test)
+metrics_rf, ypr, ppr = evaluate(rf, X_test, y_test)
+metrics_xgb, ypx, ppx = evaluate(xgb, X_test, y_test)
 
-scores = {"Regressão Logística": auc_log, "Floresta Aleatória": auc_rf, "XGBoost": auc_xgb}
-chosen = max(scores, key=scores.get)
+results = pd.DataFrame([
+    {"Modelo":"Logistic", **metrics_log},
+    {"Modelo":"RandomForest", **metrics_rf},
+    {"Modelo":"XGBoost", **metrics_xgb}
+])
 
-st.subheader("📊 Resultados dos Modelos")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("ROC‑AUC — Regressão Logística", f"{auc_log:.3f}")
-col2.metric("ROC‑AUC — Floresta Aleatória", f"{auc_rf:.3f}")
-col3.metric("ROC‑AUC — XGBoost", f"{auc_xgb:.3f}")
-col4.metric("Modelo com melhor desempenho", chosen)
+st.subheader("📊 Comparação de Modelos")
+st.dataframe(results)
 
-# ------------------ Gráfico das métricas ------------------
-st.subheader("📊 Comparação das Métricas ROC-AUC")
-fig, ax = plt.subplots(figsize=(8, 6))
-ax.bar(scores.keys(), scores.values(), color=["#1E88E5", "#43A047", "#F4511E"])
-ax.set_ylim(0, 1)
-ax.set_ylabel("ROC-AUC")
-ax.set_title("Desempenho dos Modelos")
-for i, v in enumerate(scores.values()):
-    ax.text(i, v + 0.02, f"{v:.3f}", ha='center', fontweight='bold')
-st.pyplot(fig)
-
-st.divider()
-
-# ------------------ Curvas ROC ------------------
+# ---------------- ROC ----------------
 st.subheader("📈 Curvas ROC")
-fig, ax = plt.subplots(figsize=(8, 6))
-RocCurveDisplay.from_predictions(y_test, y_proba_log, name='Regressão Logística', ax=ax)
-RocCurveDisplay.from_predictions(y_test, y_proba_rf, name='Floresta Aleatória', ax=ax)
-RocCurveDisplay.from_predictions(y_test, y_proba_xgb, name='XGBoost', ax=ax)
-ax.plot([0, 1], [0, 1], 'k--', label='Aleatório')
-ax.set_title("Curvas ROC — Comparação dos Modelos")
-ax.legend(loc="lower right")
+fig, ax = plt.subplots()
+RocCurveDisplay.from_predictions(y_test, ppl, name="Logistic", ax=ax)
+RocCurveDisplay.from_predictions(y_test, ppr, name="RandomForest", ax=ax)
+RocCurveDisplay.from_predictions(y_test, ppx, name="XGBoost", ax=ax)
 st.pyplot(fig)
 
-st.divider()
+# ---------------- SHAP otimizado ----------------
+st.subheader("🧠 SHAP (amostrado)")
 
-# ------------------ Importância das Variáveis ------------------
-st.subheader("🌟 Importância das Variáveis (Feature Importance)")
+@st.cache_resource
+def compute_shap(model, X_sample):
+    explainer = shap.TreeExplainer(model)
+    return explainer(X_sample)
 
-feature_names = num_cols.copy()
-if len(cat_cols) > 0:
-    encoder = best_rf.named_steps['prep'].named_transformers_['cat'].named_steps['encoder']
-    feature_names.extend(encoder.get_feature_names_out(cat_cols))
+X_shap = X_test[:500]  # limite para performance
+explainer = compute_shap(xgb, X_shap)
+shap_values = explainer(X_shap)
 
-importances = best_rf.named_steps['model'].feature_importances_
+fig_shap = plt.figure()
+shap.summary_plot(shap_values, X_shap, show=False)
+st.pyplot(fig_shap)
 
-if importances is not None and len(importances) > 0:
-    indices = np.argsort(importances)[::-1]
-    top_n = min(15, len(importances))
-    top_features = [feature_names[i] for i in indices[:top_n]]
-    top_importances = importances[indices[:top_n]]
+# ---------------- LIME ----------------
+st.subheader("🔍 LIME")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(top_features[::-1], top_importances[::-1], color="#1E88E5")
-    ax.set_xlabel("Importância")
-    ax.set_title("Top 15 Variáveis mais Relevantes")
-    st.pyplot(fig)
-else:
-    st.write("⚠️ Não foi possível calcular a importância das variáveis.")
+feature_names = np.array(num_cols + list(
+    preprocessor.named_transformers_["cat"].get_feature_names_out(cat_cols)
+))
 
-st.divider()
-
-# ------------------ Relatório interpretativo ------------------
-if len(num_cols) > 1:
-    X_num = df[num_cols].dropna()
-    vif_data = pd.DataFrame()
-    vif_data["Variável"] = X_num.columns
-    vif_data["VIF"] = [variance_inflation_factor(X_num.values, i) for i in range(len(X_num.columns))]
-    vif_mean = vif_data["VIF"].mean()
-else:
-    vif_mean = None
-
-if importances is not None and len(importances) > 0:
-    indices = np.argsort(importances)[::-1]
-    top_n = min(5, len(importances))
-    top_features = [feature_names[i] for i in indices[:top_n]]
-else:
-    top_features = []
-
-relatorio = f"""
-# Relatório de Interpretação — Clientes Perfeitos
-
-## Desempenho dos Modelos
-- Regressão Logística: ROC-AUC = {auc_log:.3f}
-- Floresta Aleatória: ROC-AUC = {auc_rf:.3f}
-- XGBoost: ROC-AUC = {auc_xgb:.3f}
-- Melhor modelo escolhido: {chosen}
-
-A análise mostra que o modelo {chosen} apresentou desempenho superior, capturando melhor os padrões de intenção de compra dos clientes online.
-
-## Diagnósticos Estatísticos
-- VIF médio: {vif_mean:.2f} (quanto maior, maior a chance de multicolinearidade).
-
-## Variáveis mais Relevantes
-Top 5 variáveis mais importantes no modelo Random Forest:
-{', '.join(top_features)}
-
-## Conclusão
-O pipeline funcionou corretamente:
-- Dados carregados e tratados.
-- Modelos treinados e comparados.
-- Diagnósticos estatísticos aplicados.
-- Melhor modelo escolhido com base em ROC-AUC.
-
-O modelo {chosen} é o mais indicado para prever a intenção de compra online neste dataset.
-
-## Recomendações Práticas
-- Implementar o modelo {chosen} em produção para prever intenção de compra em tempo real.
-- Monitorar o desempenho periodicamente e recalibrar com novos dados.
-- Investigar as variáveis mais relevantes para orientar estratégias de marketing e experiência do cliente.
-"""
-
-st.subheader("📑 Relatório de Interpretação")
-st.markdown(relatorio)
-
-# Botão de download
-st.download_button(
-    label="⬇️ Baixar Relatório",
-    data=relatorio,
-    file_name="relatorio_clientes_perfeitos.txt",
-    mime="text/plain"
+lime_exp = LimeTabularExplainer(
+    training_data=X_train,
+    feature_names=feature_names,
+    class_names=["0","1"],
+    mode="classification"
 )
+
+idx = st.number_input("Índice da observação", 0, X_test.shape[0]-1, 0)
+exp = lime_exp.explain_instance(X_test[idx], rf.predict_proba, num_features=10)
+st.write(exp.as_list())
+
+# ---------------- Download ----------------
+def to_excel(df):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False)
+    return buf.getvalue()
+
+st.download_button("📥 Baixar resultados (Excel)", to_excel(results),
+                   file_name="resultados.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
