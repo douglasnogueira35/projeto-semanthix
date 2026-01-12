@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -32,8 +33,8 @@ if uploaded is not None:
     df = load_data(uploaded)
     st.success("✅ Arquivo carregado com sucesso")
 else:
-    df = load_data("intencao_de_compradores_online.csv")
-    st.info("📌 Arquivo padrão carregado do repositório.")
+   df = load_data("online_shoppers_intention.csv")
+   st.info("📌 Arquivo padrão carregado do repositório.")
 
 st.write("Formato:", df.shape)
 st.divider()
@@ -204,4 +205,5 @@ O modelo {chosen} é o mais indicado para prever a intenção de compra online n
 st.subheader("📑 Relatório de Interpretação")
 st.markdown(relatorio)
 st.download_button("⬇️ Baixar Relatório", relatorio, file_name="relatorio_clientes_perfeitos.txt")
+>>>>>>> 129631d (Primeira versão do app Clientes Perfeitos)
 st.divider()
