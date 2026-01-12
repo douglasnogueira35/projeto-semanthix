@@ -74,3 +74,4 @@ Acesse no navegador: http://localhost:8501
 - Interface amigável para usuários não técnicos.
 📜 Licença
 Este projeto é distribuído sob a licença MIT. Consulte o arquivo LICENSE para mais detalhes.
+https://clientes-perfeitos01.streamlit.app/
