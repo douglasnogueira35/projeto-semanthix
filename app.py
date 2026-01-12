@@ -167,6 +167,7 @@ if importances is not None and len(importances) > 0:
 else:
     top_features = []
 
+# Relatório interpretativo
 relatorio = f"""
 # Relatório de Interpretação — Clientes Perfeitos
 
