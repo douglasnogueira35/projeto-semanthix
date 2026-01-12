@@ -197,7 +197,8 @@ O modelo {chosen} é o mais indicado para prever a intenção de compra online n
 ## Recomendações Práticas
 - Implementar o modelo {chosen} em produção para prever intenção de compra em tempo real.
 - Monitorar o desempenho periodicamente e recalibrar com novos dados.
-- Investigar as variáveis mais relevantes para orientar estratégias
+- Investigar as variáveis mais relevantes para orientar estratégias de marketing e experiência do cliente.
+"""
 
 st.subheader("📑 Relatório de Interpretação")
 st.markdown(relatorio)
